@@ -18,6 +18,8 @@ DOMAIN=""
 EMAIL=""
 CREATE_USER="n"
 USERNAME=""
+SETUP_PROXY="n"
+PROXY_PORT=""
 
 # Colors
 readonly GREEN="\033[0;32m"
@@ -206,7 +208,20 @@ function get_user_input() {
     # SSH port
     read -p "SSH port (mặc định 2222): " input_port
     SSH_PORT=${input_port:-2222}
-    
+
+    # Reverse proxy option
+    read -p "Cấu hình reverse proxy cho ứng dụng backend? (y/n): " SETUP_PROXY
+    if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "Nhập port của ứng dụng backend (vd: 3000): " PROXY_PORT
+            if [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT" -ge 1 ]] && [[ "$PROXY_PORT" -le 65535 ]]; then
+                break
+            else
+                echo -e "${RED}Port không hợp lệ. Vui lòng nhập số từ 1-65535.${NC}"
+            fi
+        done
+    fi
+
     success "Thông tin cấu hình đã thu thập"
 }
 
@@ -457,8 +472,35 @@ server {
 
     # Main location
     location / {
+EOF
+
+    # Add different content based on proxy setup
+    if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then
+        cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
+        # Reverse proxy to backend application
+        proxy_pass http://127.0.0.1:$PROXY_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+EOF
+    else
+        cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
         try_files \$uri \$uri/ =404;
     }
+EOF
+    fi
+
+    # Continue with the rest of the config
+    cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
 
     # Security locations
     location ~ /\. {
