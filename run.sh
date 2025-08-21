@@ -36,8 +36,21 @@ function show_banner() {
     clear
     echo -e "${PURPLE}"
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║                    VPS Auto Setup v${SCRIPT_VERSION}                        ║"
-    echo "║              Nginx + Docker + SSL + Security                 ║"
+
+    # Calculate padding for first line
+    local line1="VPS Auto Setup v${SCRIPT_VERSION}"
+    local line1_len=${#line1}
+    local padding1=$(( (62 - line1_len) / 2 ))
+    local padding1_right=$(( 62 - line1_len - padding1 ))
+
+    # Calculate padding for second line
+    local line2="Nginx + Docker + SSL + Security"
+    local line2_len=${#line2}
+    local padding2=$(( (62 - line2_len) / 2 ))
+    local padding2_right=$(( 62 - line2_len - padding2 ))
+
+    printf "║%*s%s%*s║\n" $padding1 "" "$line1" $padding1_right ""
+    printf "║%*s%s%*s║\n" $padding2 "" "$line2" $padding2_right ""
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -76,45 +89,47 @@ function validate_email() {
 
 function validate_domain() {
     local domain=$1
-    
+
     # Check basic requirements
     if [[ -z "$domain" ]]; then
         return 1
     fi
-    
+
     # Check length (max 253 characters for full domain)
     if [[ ${#domain} -gt 253 ]]; then
         return 1
     fi
-    
+
     # Check if it has at least one dot
     if [[ ! "$domain" == *.* ]]; then
         return 1
     fi
-    
+
     # Check for valid characters (letters, numbers, dots, hyphens)
     if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
         return 1
     fi
-    
+
     # Check that it doesn't start or end with hyphen or dot
-    if [[ "$domain" =~ ^[-.]|[-.]$ ]]; then
+    if [[ "$domain" =~ ^[.-]|[.-]$ ]]; then
         return 1
     fi
-    
+
     # Check for consecutive dots
     if [[ "$domain" =~ \.\. ]]; then
         return 1
     fi
-    
+
     # Check each part (between dots) - no part should start/end with hyphen
-    IFS='.' read -ra PARTS <<< "$domain"
+    local IFS='.'
+    local -a PARTS
+    read -ra PARTS <<< "$domain"
     for part in "${PARTS[@]}"; do
         if [[ -z "$part" ]] || [[ ${#part} -gt 63 ]] || [[ "$part" =~ ^-|-$ ]]; then
             return 1
         fi
     done
-    
+
     return 0
 }
 
