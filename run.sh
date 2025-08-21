@@ -676,7 +676,8 @@ function setup_logrotation() {
     endscript
 }
 EOF
-    
+    fi
+
     # System log rotation for our setup logs
     cat > /etc/logrotate.d/vps-setup <<EOF
 /var/log/vps-setup*.log {
