@@ -601,9 +601,6 @@ server {
         proxy_read_timeout 60s;
     }
 
-    # Continue with the rest of the config
-    cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
-
     # Security locations
     location ~ /\. {
         deny all;
