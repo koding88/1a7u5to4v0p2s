@@ -430,11 +430,17 @@ function configure_domain() {
 </html>
 EOF
     
+    # Check if www subdomain exists for nginx config
+    local nginx_server_name="$DOMAIN"
+    if dig +short "www.$DOMAIN" | grep -E '^[0-9.]+$' > /dev/null; then
+        nginx_server_name="$DOMAIN www.$DOMAIN"
+    fi
+
     # Create Nginx server block
     cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
 server {
     listen 80;
-    server_name $DOMAIN www.$DOMAIN;
+    server_name $nginx_server_name;
     root /var/www/$DOMAIN/html;
     index index.html index.htm index.php;
 
@@ -509,7 +515,7 @@ function install_ssl() {
         apt install -y certbot python3-certbot-nginx || error "Không thể cài đặt Certbot"
     fi
     
-    # Check DNS resolution
+    # Check DNS resolution for main domain
     if ! dig +short "$DOMAIN" | grep -E '^[0-9.]+$' > /dev/null; then
         warning "Domain $DOMAIN chưa trỏ đến server này. SSL có thể thất bại."
         read -p "Tiếp tục cài SSL? (y/n): " continue_ssl
@@ -518,9 +524,18 @@ function install_ssl() {
             return
         fi
     fi
-    
+
+    # Check if www subdomain exists
+    local domains_to_certify="$DOMAIN"
+    if dig +short "www.$DOMAIN" | grep -E '^[0-9.]+$' > /dev/null; then
+        domains_to_certify="$DOMAIN,www.$DOMAIN"
+        info "Phát hiện www subdomain, sẽ tạo SSL cho cả hai"
+    else
+        info "Không phát hiện www subdomain, chỉ tạo SSL cho domain chính"
+    fi
+
     # Obtain SSL certificate
-    certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" \
+    certbot --nginx -d "$DOMAIN" $(if [[ "$domains_to_certify" == *"www"* ]]; then echo "-d www.$DOMAIN"; fi) \
             --non-interactive \
             --agree-tos \
             --email "$EMAIL" \
