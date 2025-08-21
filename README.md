@@ -18,6 +18,3 @@ chmod +x run.sh
 # Chạy script với quyền root
 sudo ./run.sh
 ```
-yền root
-sudo ./run.sh
-```
