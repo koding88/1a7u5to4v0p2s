@@ -635,7 +635,19 @@ EOF
     # Test and reload Nginx
     nginx -t || error "Cấu hình Nginx không hợp lệ"
     systemctl reload nginx
-    
+
+    # Auto-deploy SSL if certificate exists but not configured
+    if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]] && ! grep -q "listen.*443.*ssl" "/etc/nginx/sites-available/$DOMAIN" 2>/dev/null; then
+        info "Phát hiện SSL certificate có sẵn cho $DOMAIN"
+        info "Đang tự động deploy SSL vào Nginx config..."
+
+        if certbot --nginx -d "$DOMAIN" --redirect --non-interactive --reinstall 2>/dev/null; then
+            success "Đã tự động deploy SSL certificate"
+        else
+            warning "Tự động deploy SSL thất bại. Bạn có thể chạy option 7 để cài SSL thủ công."
+        fi
+    fi
+
     success "Domain $DOMAIN đã được cấu hình"
 }
 
@@ -646,6 +658,24 @@ function install_ssl() {
     # Check if SSL certificate already exists for domain
     if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
         warning "SSL certificate cho $DOMAIN đã tồn tại"
+
+        # Check if Nginx config has SSL configured
+        if ! grep -q "listen.*443.*ssl" "/etc/nginx/sites-available/$DOMAIN" 2>/dev/null; then
+            info "SSL certificate tồn tại nhưng chưa được deploy vào Nginx config"
+            info "Đang deploy SSL certificate vào Nginx..."
+
+            # Deploy existing certificate to Nginx config
+            if certbot --nginx -d "$DOMAIN" --redirect --non-interactive --reinstall 2>/dev/null; then
+                success "Đã deploy SSL certificate vào Nginx config"
+            else
+                # If non-interactive fails, try interactive mode
+                warning "Deploy tự động thất bại, chuyển sang chế độ tương tác..."
+                certbot --nginx -d "$DOMAIN" --redirect || warning "Không thể deploy SSL certificate vào Nginx"
+            fi
+        else
+            info "SSL certificate đã được cấu hình trong Nginx"
+        fi
+
         success "SSL certificate đã được cài đặt"
         return
     fi
