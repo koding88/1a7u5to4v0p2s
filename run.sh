@@ -36,7 +36,7 @@ function show_banner() {
     clear
     echo -e "${PURPLE}"
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║                    VPS Auto Setup v${SCRIPT_VERSION}                    ║"
+    echo "║                    VPS Auto Setup v${SCRIPT_VERSION}                        ║"
     echo "║              Nginx + Docker + SSL + Security                 ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -76,9 +76,45 @@ function validate_email() {
 
 function validate_domain() {
     local domain=$1
-    if [[ ! $domain =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+    
+    # Check basic requirements
+    if [[ -z "$domain" ]]; then
         return 1
     fi
+    
+    # Check length (max 253 characters for full domain)
+    if [[ ${#domain} -gt 253 ]]; then
+        return 1
+    fi
+    
+    # Check if it has at least one dot
+    if [[ ! "$domain" == *.* ]]; then
+        return 1
+    fi
+    
+    # Check for valid characters (letters, numbers, dots, hyphens)
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        return 1
+    fi
+    
+    # Check that it doesn't start or end with hyphen or dot
+    if [[ "$domain" =~ ^[-.]|[-.]$ ]]; then
+        return 1
+    fi
+    
+    # Check for consecutive dots
+    if [[ "$domain" =~ \.\. ]]; then
+        return 1
+    fi
+    
+    # Check each part (between dots) - no part should start/end with hyphen
+    IFS='.' read -ra PARTS <<< "$domain"
+    for part in "${PARTS[@]}"; do
+        if [[ -z "$part" ]] || [[ ${#part} -gt 63 ]] || [[ "$part" =~ ^-|-$ ]]; then
+            return 1
+        fi
+    done
+    
     return 0
 }
 
