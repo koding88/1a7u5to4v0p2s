@@ -1799,11 +1799,12 @@ function get_user_input_for_ssl() {
 
 # Main execution
 function main() {
+    local first_arg="${1:-}"
     show_banner
     check_prerequisites
 
     # Check if running with --auto or --full argument for backward compatibility
-    if [[ "$1" == "--auto" ]] || [[ "$1" == "--full" ]]; then
+    if [[ "$first_arg" == "--auto" ]] || [[ "$first_arg" == "--full" ]]; then
         echo -e "\n${GREEN}🚀 Chạy auto setup for deploy...${NC}"
         auto_setup_for_deploy
         return
