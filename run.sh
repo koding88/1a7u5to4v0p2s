@@ -1,7 +1,12 @@
 #!/bin/bash
 # Improved Auto Setup VPS: Nginx + Docker + SSL + Security
-# Author: Improved Version
+# Author: koding88
 # Version: 2.0
+#
+# Usage:
+#   ./run.sh           - Interactive menu mode
+#   ./run.sh --auto    - Auto full setup mode
+#   ./run.sh --full    - Auto full setup mode
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
@@ -9,8 +14,8 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 SCRIPT_VERSION="2.0"
 LOG_FILE="/var/log/vps-setup-$(date +%Y%m%d-%H%M%S).log"
 BACKUP_DIR="/root/vps-setup-backups"
-SSH_PORT="2222"
-TOTAL_STEPS=18
+SSH_PORT="22"
+TOTAL_STEPS=16
 
 # Initialize
 STEP=0
@@ -168,46 +173,161 @@ function check_prerequisites() {
     success "Hệ thống phù hợp để chạy script"
 }
 
-# User input with validation
-function get_user_input() {
-    progress "Thu thập thông tin cấu hình"
-    
-    # Domain input
-    while true; do
-        read -p "Nhập domain name (vd: example.com): " DOMAIN
-        if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
-            break
-        else
-            echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
-        fi
-    done
-    
-    # Email input
-    while true; do
-        read -p "Nhập email cho SSL certificate: " EMAIL
-        if [[ -n "$EMAIL" ]] && validate_email "$EMAIL"; then
-            break
-        else
-            echo -e "${RED}Email không hợp lệ. Vui lòng nhập lại.${NC}"
-        fi
-    done
-    
-    # User creation option
-    read -p "Tạo user non-root? (y/n): " CREATE_USER
-    if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
-        while true; do
-            read -p "Nhập tên user: " USERNAME
-            if [[ -n "$USERNAME" ]] && validate_username "$USERNAME"; then
+# Detect existing configuration
+function detect_existing_config() {
+    # Detect existing domain from nginx sites-enabled
+    local existing_domain=""
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        for site in /etc/nginx/sites-enabled/*; do
+            if [[ -f "$site" ]] && [[ "$(basename "$site")" != "default" ]]; then
+                existing_domain=$(basename "$site")
                 break
-            else
-                echo -e "${RED}Username không hợp lệ (chỉ chữ thường, số, dấu gạch dưới, gạch ngang).${NC}"
             fi
         done
     fi
-    
+
+    # Detect existing email from Let's Encrypt
+    local existing_email=""
+    if [[ -f /etc/letsencrypt/accounts/acme-v02.api.letsencrypt.org/directory/*/regr.json ]]; then
+        existing_email=$(grep -o '"mailto:[^"]*"' /etc/letsencrypt/accounts/acme-v02.api.letsencrypt.org/directory/*/regr.json 2>/dev/null | head -1 | sed 's/"mailto://;s/"//')
+    fi
+
+    # Detect existing SSH port
+    local existing_ssh_port="22"
+    if [[ -f /etc/ssh/sshd_config.d/99-custom.conf ]]; then
+        existing_ssh_port=$(grep "^Port" /etc/ssh/sshd_config.d/99-custom.conf 2>/dev/null | awk '{print $2}' || echo "22")
+    elif grep -q "^Port" /etc/ssh/sshd_config 2>/dev/null; then
+        existing_ssh_port=$(grep "^Port" /etc/ssh/sshd_config | awk '{print $2}')
+    fi
+
+    # Detect existing non-root user (exclude system users)
+    local existing_user=""
+    while IFS=: read -r username _ uid _ _ home shell; do
+        if [[ $uid -ge 1000 ]] && [[ $uid -lt 65534 ]] && [[ "$username" != "nobody" ]] && [[ "$shell" != "/usr/sbin/nologin" ]] && [[ "$shell" != "/bin/false" ]]; then
+            existing_user="$username"
+            break
+        fi
+    done < /etc/passwd
+
+    # Set global variables
+    EXISTING_DOMAIN="$existing_domain"
+    EXISTING_EMAIL="$existing_email"
+    EXISTING_SSH_PORT="$existing_ssh_port"
+    EXISTING_USER="$existing_user"
+}
+
+# User input with validation
+function get_user_input() {
+    progress "Thu thập thông tin cấu hình"
+
+    # Detect existing configuration first
+    detect_existing_config
+
+    # Show existing configuration if any
+    if [[ -n "$EXISTING_DOMAIN" ]] || [[ -n "$EXISTING_EMAIL" ]] || [[ "$EXISTING_SSH_PORT" != "22" ]] || [[ -n "$EXISTING_USER" ]]; then
+        echo -e "\n${BLUE}🔍 Phát hiện cấu hình hiện có:${NC}"
+        [[ -n "$EXISTING_DOMAIN" ]] && echo -e "${YELLOW}Domain:${NC} $EXISTING_DOMAIN"
+        [[ -n "$EXISTING_EMAIL" ]] && echo -e "${YELLOW}Email:${NC} $EXISTING_EMAIL"
+        echo -e "${YELLOW}SSH Port:${NC} $EXISTING_SSH_PORT"
+        [[ -n "$EXISTING_USER" ]] && echo -e "${YELLOW}User:${NC} $EXISTING_USER"
+        echo ""
+    fi
+
+    # Domain input
+    if [[ -n "$EXISTING_DOMAIN" ]]; then
+        read -p "Domain hiện tại: $EXISTING_DOMAIN. Thay đổi? (y/n): " change_domain
+        if [[ "$change_domain" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập domain name mới: " DOMAIN
+                if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
+                    break
+                else
+                    echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
+                fi
+            done
+        else
+            DOMAIN="$EXISTING_DOMAIN"
+        fi
+    else
+        while true; do
+            read -p "Nhập domain name (vd: example.com): " DOMAIN
+            if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
+                break
+            else
+                echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
+            fi
+        done
+    fi
+
+    # Email input
+    if [[ -n "$EXISTING_EMAIL" ]]; then
+        read -p "Email hiện tại: $EXISTING_EMAIL. Thay đổi? (y/n): " change_email
+        if [[ "$change_email" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập email mới cho SSL certificate: " EMAIL
+                if [[ -n "$EMAIL" ]] && validate_email "$EMAIL"; then
+                    break
+                else
+                    echo -e "${RED}Email không hợp lệ. Vui lòng nhập lại.${NC}"
+                fi
+            done
+        else
+            EMAIL="$EXISTING_EMAIL"
+        fi
+    else
+        while true; do
+            read -p "Nhập email cho SSL certificate: " EMAIL
+            if [[ -n "$EMAIL" ]] && validate_email "$EMAIL"; then
+                break
+            else
+                echo -e "${RED}Email không hợp lệ. Vui lòng nhập lại.${NC}"
+            fi
+        done
+    fi
+
+    # User creation option
+    if [[ -n "$EXISTING_USER" ]]; then
+        read -p "User hiện tại: $EXISTING_USER. Tạo user mới? (y/n): " CREATE_USER
+        if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập tên user mới: " USERNAME
+                if [[ -n "$USERNAME" ]] && validate_username "$USERNAME"; then
+                    break
+                else
+                    echo -e "${RED}Username không hợp lệ (chỉ chữ thường, số, dấu gạch dưới, gạch ngang).${NC}"
+                fi
+            done
+        else
+            CREATE_USER="n"
+            USERNAME="$EXISTING_USER"
+        fi
+    else
+        read -p "Tạo user non-root? (y/n): " CREATE_USER
+        if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập tên user: " USERNAME
+                if [[ -n "$USERNAME" ]] && validate_username "$USERNAME"; then
+                    break
+                else
+                    echo -e "${RED}Username không hợp lệ (chỉ chữ thường, số, dấu gạch dưới, gạch ngang).${NC}"
+                fi
+            done
+        fi
+    fi
+
     # SSH port
-    read -p "SSH port (mặc định 2222): " input_port
-    SSH_PORT=${input_port:-2222}
+    if [[ "$EXISTING_SSH_PORT" != "22" ]]; then
+        read -p "SSH port hiện tại: $EXISTING_SSH_PORT. Thay đổi? (y/n): " change_ssh_port
+        if [[ "$change_ssh_port" =~ ^[Yy]$ ]]; then
+            read -p "SSH port mới (mặc định 22): " input_port
+            SSH_PORT=${input_port:-22}
+        else
+            SSH_PORT="$EXISTING_SSH_PORT"
+        fi
+    else
+        read -p "SSH port (mặc định 22): " input_port
+        SSH_PORT=${input_port:-22}
+    fi
 
     # Reverse proxy option
     read -p "Cấu hình reverse proxy cho ứng dụng backend? (y/n): " SETUP_PROXY
@@ -411,39 +531,35 @@ EOF
 function configure_domain() {
     progress "Cấu hình Nginx cho domain: $DOMAIN"
 
-    # Check if domain is already configured
-    if [[ -f "/etc/nginx/sites-available/$DOMAIN" ]] && [[ -L "/etc/nginx/sites-enabled/$DOMAIN" ]]; then
-        warning "Domain $DOMAIN đã được cấu hình"
-        success "Domain $DOMAIN đã được cấu hình"
-        return
+    # Remove old configuration files if they exist
+    if [[ -f "/etc/nginx/sites-available/$DOMAIN" ]]; then
+        backup_config "/etc/nginx/sites-available/$DOMAIN"
+        rm -f "/etc/nginx/sites-available/$DOMAIN"
+        info "Đã xóa file cấu hình cũ: /etc/nginx/sites-available/$DOMAIN"
     fi
 
-    # Create web directory
-    mkdir -p "/var/www/$DOMAIN/html"
+    if [[ -L "/etc/nginx/sites-enabled/$DOMAIN" ]]; then
+        rm -f "/etc/nginx/sites-enabled/$DOMAIN"
+        info "Đã xóa symlink cũ: /etc/nginx/sites-enabled/$DOMAIN"
+    fi
+
+    # For API backend, we don't need static files
+    # Just create basic directory structure
+    mkdir -p "/var/www/$DOMAIN"
     chown -R www-data:www-data "/var/www/$DOMAIN"
-    
-    # Create initial index page
-    cat > "/var/www/$DOMAIN/html/index.html" <<EOF
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Welcome to $DOMAIN</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .success { color: #28a745; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1 class="success">🎉 Server Setup Complete!</h1>
-        <p>Domain: <strong>$DOMAIN</strong></p>
-        <p>Server is running Nginx with SSL</p>
-        <p><small>Setup completed on $(date)</small></p>
-    </div>
-</body>
-</html>
-EOF
+
+    # Ensure we have proxy port configured
+    if [[ -z "$PROXY_PORT" ]]; then
+        while true; do
+            read -p "Nhập port của API backend (vd: 3000): " PROXY_PORT
+            if [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT" -ge 1 ]] && [[ "$PROXY_PORT" -le 65535 ]]; then
+                break
+            else
+                echo -e "${RED}Port không hợp lệ. Vui lòng nhập số từ 1-65535.${NC}"
+            fi
+        done
+        SETUP_PROXY="y"
+    fi
     
     # Check if www subdomain exists for nginx config
     local nginx_server_name="$DOMAIN"
@@ -451,32 +567,25 @@ EOF
         nginx_server_name="$DOMAIN www.$DOMAIN"
     fi
 
-    # Create Nginx server block
+    # Create Nginx server block with reverse proxy (default for API backend)
     cat > "/etc/nginx/sites-available/$DOMAIN" <<EOF
 server {
     listen 80;
     server_name $nginx_server_name;
-    root /var/www/$DOMAIN/html;
-    index index.html index.htm index.php;
 
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
 
-    # Rate limiting
+    # Rate limiting for API
     limit_req zone=api burst=20 nodelay;
 
-    # File upload limit
+    # File upload limit for API
     client_max_body_size 50M;
 
-    # Main location
+    # Main location - Reverse proxy to API backend
     location / {
-EOF
-
-    # Add different content based on proxy setup
-    if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then
-        cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
         # Reverse proxy to backend application
         proxy_pass http://127.0.0.1:$PROXY_PORT;
         proxy_http_version 1.1;
@@ -491,13 +600,6 @@ EOF
         proxy_send_timeout 60s;
         proxy_read_timeout 60s;
     }
-EOF
-    else
-        cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
-        try_files \$uri \$uri/ =404;
-    }
-EOF
-    fi
 
     # Continue with the rest of the config
     cat >> "/etc/nginx/sites-available/$DOMAIN" <<EOF
@@ -845,7 +947,8 @@ Date: $(date)
 Domain: $DOMAIN
 Email: $EMAIL
 SSH Port: $SSH_PORT
-$(if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then echo "Username: $USERNAME"; fi)
+$(if [[ "$CREATE_USER" =~ ^[Yy]$ ]] || [[ -n "$USERNAME" ]]; then echo "Username: $USERNAME"; fi)
+$(if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then echo "Reverse Proxy: Port $PROXY_PORT"; fi)
 
 INSTALLED SERVICES:
 - Nginx (Web server)
@@ -888,10 +991,14 @@ EOF
     echo -e "\n${GREEN}🎉 VPS SETUP HOÀN TẤT! 🎉${NC}"
     echo -e "${GREEN}===========================================${NC}"
     echo -e "${BLUE}Domain:${NC} $DOMAIN"
+    echo -e "${BLUE}Email:${NC} $EMAIL"
     echo -e "${BLUE}SSL:${NC} Đã cài đặt (nếu DNS đúng)"
     echo -e "${BLUE}SSH Port:${NC} $SSH_PORT"
-    if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
+    if [[ "$CREATE_USER" =~ ^[Yy]$ ]] || [[ -n "$USERNAME" ]]; then
         echo -e "${BLUE}User:${NC} $USERNAME"
+    fi
+    if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}Reverse Proxy:${NC} Port $PROXY_PORT"
     fi
     echo -e "${GREEN}===========================================${NC}"
     echo -e "\n${YELLOW}⚠️  QUAN TRỌNG:${NC}"
@@ -902,10 +1009,217 @@ EOF
     echo -e "${BLUE}Backup files:${NC} $BACKUP_DIR"
 }
 
-# Main execution
-function main() {
-    show_banner
-    check_prerequisites
+# Show current configuration
+function show_current_config() {
+    echo -e "\n${BLUE}📋 CẤU HÌNH HIỆN TẠI${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    detect_existing_config
+
+    # Domain
+    if [[ -n "$EXISTING_DOMAIN" ]]; then
+        echo -e "${GREEN}✅ Domain:${NC} $EXISTING_DOMAIN"
+        if [[ -f "/etc/nginx/sites-enabled/$EXISTING_DOMAIN" ]]; then
+            echo -e "   ${YELLOW}└─ Nginx:${NC} Đã cấu hình"
+        fi
+        if [[ -f "/etc/letsencrypt/live/$EXISTING_DOMAIN/fullchain.pem" ]]; then
+            echo -e "   ${YELLOW}└─ SSL:${NC} Đã cài đặt"
+        fi
+    else
+        echo -e "${RED}❌ Domain:${NC} Chưa cấu hình"
+    fi
+
+    # Email
+    if [[ -n "$EXISTING_EMAIL" ]]; then
+        echo -e "${GREEN}✅ Email:${NC} $EXISTING_EMAIL"
+    else
+        echo -e "${RED}❌ Email:${NC} Chưa cấu hình"
+    fi
+
+    # SSH
+    echo -e "${GREEN}✅ SSH Port:${NC} $EXISTING_SSH_PORT"
+    if [[ -f /etc/ssh/sshd_config.d/99-custom.conf ]]; then
+        echo -e "   ${YELLOW}└─ Security:${NC} Đã hardening"
+    else
+        echo -e "   ${YELLOW}└─ Security:${NC} Chưa hardening"
+    fi
+
+    # User
+    if [[ -n "$EXISTING_USER" ]]; then
+        echo -e "${GREEN}✅ User:${NC} $EXISTING_USER"
+    else
+        echo -e "${YELLOW}⚠️  User:${NC} Chỉ có root"
+    fi
+
+    # Services
+    echo -e "\n${BLUE}🔧 DỊCH VỤ${NC}"
+
+    # Docker
+    if command -v docker &> /dev/null; then
+        echo -e "${GREEN}✅ Docker:${NC} Đã cài đặt"
+    else
+        echo -e "${RED}❌ Docker:${NC} Chưa cài đặt"
+    fi
+
+    # Nginx
+    if is_installed nginx; then
+        echo -e "${GREEN}✅ Nginx:${NC} Đã cài đặt"
+    else
+        echo -e "${RED}❌ Nginx:${NC} Chưa cài đặt"
+    fi
+
+    # UFW
+    if ufw status | grep -q "Status: active"; then
+        echo -e "${GREEN}✅ Firewall:${NC} Đã kích hoạt"
+    else
+        echo -e "${RED}❌ Firewall:${NC} Chưa kích hoạt"
+    fi
+
+    # Fail2Ban
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        echo -e "${GREEN}✅ Fail2Ban:${NC} Đang chạy"
+    else
+        echo -e "${RED}❌ Fail2Ban:${NC} Chưa chạy"
+    fi
+
+    # Monitoring
+    if command -v netdata &> /dev/null; then
+        echo -e "${GREEN}✅ Monitoring:${NC} Netdata đã cài"
+    else
+        echo -e "${RED}❌ Monitoring:${NC} Chưa cài đặt"
+    fi
+
+    echo -e "${BLUE}===========================================${NC}"
+    echo -e "\n${PURPLE}💡 TÍNH NĂNG BỔ SUNG${NC}"
+    echo -e "${YELLOW}15.${NC} Kiểm tra cấu hình máy (CPU, RAM, SSD)"
+    echo -e "${YELLOW}16.${NC} Kiểm tra thông tin mạng (IP, Ports, Speed)"
+    echo -e "${YELLOW}17.${NC} Kiểm tra Docker containers"
+    echo -e "${YELLOW}18.${NC} Dừng Docker containers"
+    echo -e "${YELLOW}19.${NC} Khởi động lại Nginx"
+    echo -e "${YELLOW}20.${NC} Xem cấu hình Nginx + Domain"
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+# Show menu
+function show_menu() {
+    echo -e "\n${PURPLE}🚀 VPS SETUP MENU${NC}"
+    echo -e "${PURPLE}===========================================${NC}"
+    echo -e "${YELLOW} 0.${NC} Hiển thị cấu hình hiện tại"
+    echo -e "${YELLOW} 1.${NC} Cập nhật hệ thống và cài gói cơ bản"
+    echo -e "${YELLOW} 2.${NC} Tạo/quản lý user non-root"
+    echo -e "${YELLOW} 3.${NC} Cấu hình firewall (UFW)"
+    echo -e "${YELLOW} 4.${NC} Cài đặt Docker & Docker Compose"
+    echo -e "${YELLOW} 5.${NC} Cài đặt và cấu hình Nginx"
+    echo -e "${YELLOW} 6.${NC} Cấu hình domain cho Nginx"
+    echo -e "${YELLOW} 7.${NC} Cài đặt SSL certificate"
+    echo -e "${YELLOW} 8.${NC} Thiết lập SSL auto-renewal"
+    echo -e "${YELLOW} 9.${NC} Cấu hình bảo mật SSH"
+    echo -e "${YELLOW}10.${NC} Cấu hình Fail2Ban"
+    echo -e "${YELLOW}11.${NC} Cấu hình log rotation"
+    echo -e "${YELLOW}12.${NC} Cài đặt monitoring tools"
+    echo -e "${YELLOW}13.${NC} Tối ưu hóa hệ thống"
+    echo -e "${YELLOW}14.${NC} Tạo báo cáo tổng kết"
+    echo -e "${BLUE}15.${NC} 💻 Kiểm tra cấu hình máy (CPU, RAM, SSD)"
+    echo -e "${BLUE}16.${NC} 🌐 Kiểm tra thông tin mạng (IP, Ports, Speed)"
+    echo -e "${BLUE}17.${NC} 🐳 Kiểm tra Docker containers"
+    echo -e "${BLUE}18.${NC} 🛑 Dừng Docker containers"
+    echo -e "${BLUE}19.${NC} 🔄 Khởi động lại Nginx"
+    echo -e "${BLUE}20.${NC} 📋 Xem cấu hình Nginx + Domain"
+    echo -e "${GREEN}88.${NC} 🚀 AUTO SETUP FOR DEPLOY (Steps 1-14)"
+    echo -e "${RED} q.${NC} Thoát"
+    echo -e "${PURPLE}===========================================${NC}"
+}
+
+# Handle menu choice
+function handle_menu_choice() {
+    local choice=$1
+
+    case $choice in
+        0)
+            show_current_config
+            ;;
+        1)
+            update_system
+            ;;
+        2)
+            get_user_input_for_user_creation
+            create_user
+            ;;
+        3)
+            setup_firewall
+            ;;
+        4)
+            install_docker
+            ;;
+        5)
+            install_nginx
+            ;;
+        6)
+            get_user_input_for_domain
+            configure_domain
+            ;;
+        7)
+            get_user_input_for_ssl
+            install_ssl
+            ;;
+        8)
+            setup_ssl_renewal
+            ;;
+        9)
+            secure_ssh
+            ;;
+        10)
+            configure_fail2ban
+            ;;
+        11)
+            setup_logrotation
+            ;;
+        12)
+            install_monitoring
+            ;;
+        13)
+            optimize_system
+            ;;
+        14)
+            show_summary
+            ;;
+        15)
+            check_system_specs
+            ;;
+        16)
+            check_network_info
+            ;;
+        17)
+            check_docker_containers
+            ;;
+        18)
+            stop_docker_containers
+            ;;
+        19)
+            restart_nginx
+            ;;
+        20)
+            view_nginx_config
+            ;;
+        88)
+            auto_setup_for_deploy
+            ;;
+        q|Q)
+            echo -e "\n${GREEN}👋 Cảm ơn bạn đã sử dụng VPS Setup Script!${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}❌ Lựa chọn không hợp lệ. Vui lòng thử lại.${NC}"
+            ;;
+    esac
+}
+
+# Auto setup for deployment
+function auto_setup_for_deploy() {
+    echo -e "\n${GREEN}🚀 BẮT ĐẦU AUTO SETUP FOR DEPLOY...${NC}"
+    echo -e "${BLUE}Chạy các bước cần thiết cho deployment (Steps 1-14)${NC}"
+    echo ""
+
     get_user_input
     update_system
     create_user
@@ -921,8 +1235,597 @@ function main() {
     install_monitoring
     optimize_system
     show_summary
-    
-    echo -e "\n${GREEN}✨ Script completed successfully! ✨${NC}"
+
+    echo -e "\n${GREEN}✨ Auto setup for deploy completed successfully! ✨${NC}"
+    echo -e "${YELLOW}💡 Tip: Sử dụng các tính năng bổ sung (15-20) để monitoring và quản lý server${NC}"
+}
+
+# System information functions
+function check_system_specs() {
+    echo -e "\n${BLUE}💻 THÔNG TIN CẤU HÌNH MÁY${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # CPU Information
+    echo -e "${GREEN}🔧 CPU:${NC}"
+    local cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)
+    local cpu_cores=$(nproc)
+    local cpu_threads=$(grep -c processor /proc/cpuinfo)
+    echo -e "   Model: $cpu_model"
+    echo -e "   Cores: $cpu_cores"
+    echo -e "   Threads: $cpu_threads"
+
+    # Load average
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}')
+    echo -e "   Load Average:$load_avg"
+
+    # RAM Information
+    echo -e "\n${GREEN}🧠 RAM:${NC}"
+    local ram_info=$(free -h | grep "Mem:")
+    local ram_total=$(echo $ram_info | awk '{print $2}')
+    local ram_used=$(echo $ram_info | awk '{print $3}')
+    local ram_free=$(echo $ram_info | awk '{print $4}')
+    local ram_percent=$(free | grep Mem | awk '{printf("%.1f%%", $3/$2 * 100.0)}')
+    echo -e "   Total: $ram_total"
+    echo -e "   Used: $ram_used ($ram_percent)"
+    echo -e "   Free: $ram_free"
+
+    # Swap Information
+    local swap_info=$(free -h | grep "Swap:")
+    if [[ -n "$swap_info" ]]; then
+        local swap_total=$(echo $swap_info | awk '{print $2}')
+        local swap_used=$(echo $swap_info | awk '{print $3}')
+        echo -e "   Swap: $swap_used / $swap_total"
+    fi
+
+    # Storage Information
+    echo -e "\n${GREEN}💾 STORAGE:${NC}"
+    df -h | grep -E '^/dev/' | while read line; do
+        local device=$(echo $line | awk '{print $1}')
+        local size=$(echo $line | awk '{print $2}')
+        local used=$(echo $line | awk '{print $3}')
+        local avail=$(echo $line | awk '{print $4}')
+        local percent=$(echo $line | awk '{print $5}')
+        local mount=$(echo $line | awk '{print $6}')
+        echo -e "   $device ($mount): $used / $size ($percent used)"
+    done
+
+    # System uptime
+    echo -e "\n${GREEN}⏰ UPTIME:${NC}"
+    local uptime_info=$(uptime -p)
+    echo -e "   $uptime_info"
+
+    # OS Information
+    echo -e "\n${GREEN}🐧 OS:${NC}"
+    if [[ -f /etc/os-release ]]; then
+        local os_name=$(grep "PRETTY_NAME" /etc/os-release | cut -d'"' -f2)
+        echo -e "   $os_name"
+    fi
+    local kernel=$(uname -r)
+    echo -e "   Kernel: $kernel"
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+function check_network_info() {
+    echo -e "\n${BLUE}🌐 THÔNG TIN MẠNG${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # IP Information
+    echo -e "${GREEN}📍 IP ADDRESS:${NC}"
+
+    # Public IP
+    local public_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "Không thể lấy IP")
+    echo -e "   Public IP: $public_ip"
+
+    # Private IP
+    local private_ip=$(ip route get 8.8.8.8 | awk '{print $7; exit}' 2>/dev/null || echo "Không xác định")
+    echo -e "   Private IP: $private_ip"
+
+    # Network interfaces
+    echo -e "\n${GREEN}🔌 NETWORK INTERFACES:${NC}"
+    ip -4 addr show | grep -E "inet.*scope global" | while read line; do
+        local interface=$(echo $line | awk '{print $NF}')
+        local ip=$(echo $line | awk '{print $2}' | cut -d'/' -f1)
+        echo -e "   $interface: $ip"
+    done
+
+    # Open ports
+    echo -e "\n${GREEN}🚪 OPEN PORTS:${NC}"
+    if command -v ss &> /dev/null; then
+        echo -e "   TCP Listening Ports:"
+        ss -tlnp | grep LISTEN | awk '{print $4}' | cut -d: -f2 | sort -n | uniq | head -10 | while read port; do
+            local service=$(ss -tlnp | grep ":$port " | awk '{print $6}' | head -1)
+            echo -e "     Port $port: $service"
+        done
+    elif command -v netstat &> /dev/null; then
+        echo -e "   TCP Listening Ports:"
+        netstat -tlnp 2>/dev/null | grep LISTEN | awk '{print $4}' | cut -d: -f2 | sort -n | uniq | head -10 | while read port; do
+            echo -e "     Port $port"
+        done
+    else
+        echo -e "   ${YELLOW}Cần cài đặt ss hoặc netstat để xem ports${NC}"
+    fi
+
+    # Network speed test
+    echo -e "\n${GREEN}🚀 NETWORK SPEED TEST:${NC}"
+    echo -e "   ${YELLOW}Đang test tốc độ mạng...${NC}"
+
+    # Test ping to domestic and international servers
+    echo -e "   Ping Test:"
+
+    # Vietnam servers
+    local vn_ping=$(ping -c 3 8.8.8.8 2>/dev/null | tail -1 | awk -F'/' '{print $5}' 2>/dev/null || echo "N/A")
+    echo -e "     Google DNS: ${vn_ping}ms"
+
+    local cf_ping=$(ping -c 3 1.1.1.1 2>/dev/null | tail -1 | awk -F'/' '{print $5}' 2>/dev/null || echo "N/A")
+    echo -e "     Cloudflare: ${cf_ping}ms"
+
+    # Download speed test (simple)
+    echo -e "   Download Test:"
+    if command -v wget &> /dev/null; then
+        local download_speed=$(timeout 10 wget -O /dev/null http://speedtest.ftp.otenet.gr/files/test1Mb.db 2>&1 | grep -o '[0-9.]*[KMG]B/s' | tail -1 || echo "N/A")
+        echo -e "     Speed: $download_speed"
+    else
+        echo -e "     ${YELLOW}Cần wget để test download speed${NC}"
+    fi
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+function check_docker_containers() {
+    echo -e "\n${BLUE}🐳 DOCKER CONTAINERS${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # Check if Docker is installed
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}❌ Docker chưa được cài đặt${NC}"
+        read -p "Bạn có muốn cài đặt Docker không? (y/n): " install_docker
+        if [[ "$install_docker" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Đang cài đặt Docker...${NC}"
+            install_docker
+            echo -e "${GREEN}✅ Docker đã được cài đặt${NC}"
+        else
+            echo -e "${YELLOW}Bỏ qua kiểm tra Docker containers${NC}"
+            return
+        fi
+    fi
+
+    # Check Docker service status
+    if ! systemctl is-active --quiet docker; then
+        echo -e "${YELLOW}⚠️  Docker service không chạy. Đang khởi động...${NC}"
+        systemctl start docker
+    fi
+
+    echo -e "${GREEN}🔍 RUNNING CONTAINERS:${NC}"
+
+    # Get running containers
+    local running_containers=$(docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Names}}" 2>/dev/null)
+
+    if [[ -z "$running_containers" ]] || [[ "$running_containers" == *"CONTAINER ID"* ]] && [[ $(echo "$running_containers" | wc -l) -eq 1 ]]; then
+        echo -e "   ${YELLOW}Không có container nào đang chạy${NC}"
+    else
+        echo "$running_containers"
+    fi
+
+    echo -e "\n${GREEN}📊 DOCKER STATS:${NC}"
+    local total_containers=$(docker ps -a --format "{{.ID}}" 2>/dev/null | wc -l)
+    local running_count=$(docker ps --format "{{.ID}}" 2>/dev/null | wc -l)
+    local stopped_count=$((total_containers - running_count))
+
+    echo -e "   Total containers: $total_containers"
+    echo -e "   Running: $running_count"
+    echo -e "   Stopped: $stopped_count"
+
+    # Docker images
+    echo -e "\n${GREEN}🖼️  DOCKER IMAGES:${NC}"
+    local images_count=$(docker images --format "{{.ID}}" 2>/dev/null | wc -l)
+    echo -e "   Total images: $images_count"
+
+    if [[ $images_count -gt 0 ]]; then
+        echo -e "   Recent images:"
+        docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" 2>/dev/null | head -6
+    fi
+
+    # Option to view container logs
+    if [[ $running_count -gt 0 ]]; then
+        echo -e "\n${YELLOW}💡 Muốn xem logs của container nào đó?${NC}"
+        read -p "Nhập Container ID/Name để xem logs (hoặc Enter để bỏ qua): " container_for_logs
+
+        if [[ -n "$container_for_logs" ]]; then
+            echo -e "\n${GREEN}📋 LOGS FOR CONTAINER: $container_for_logs${NC}"
+            echo -e "${YELLOW}Hiển thị 50 dòng log cuối:${NC}"
+            echo "----------------------------------------"
+
+            if docker logs --tail 50 "$container_for_logs" 2>/dev/null; then
+                echo "----------------------------------------"
+                echo -e "${GREEN}✅ Logs hiển thị thành công${NC}"
+
+                # Option to follow logs
+                read -p "Muốn theo dõi logs real-time? (y/n): " follow_logs
+                if [[ "$follow_logs" =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}Đang theo dõi logs real-time (Ctrl+C để dừng)...${NC}"
+                    docker logs -f "$container_for_logs" 2>/dev/null || echo -e "${RED}❌ Không thể theo dõi logs${NC}"
+                fi
+            else
+                echo -e "${RED}❌ Không thể lấy logs cho container: $container_for_logs${NC}"
+                echo -e "${YELLOW}Kiểm tra lại Container ID hoặc Name${NC}"
+            fi
+        fi
+    fi
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+function stop_docker_containers() {
+    echo -e "\n${BLUE}🛑 DỪNG DOCKER CONTAINERS${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # Check if Docker is installed
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}❌ Docker chưa được cài đặt${NC}"
+        return
+    fi
+
+    # Get running containers
+    local running_containers=$(docker ps --format "{{.ID}} {{.Names}} {{.Image}}" 2>/dev/null)
+
+    if [[ -z "$running_containers" ]]; then
+        echo -e "${YELLOW}Không có container nào đang chạy${NC}"
+        return
+    fi
+
+    echo -e "${GREEN}🔍 CONTAINERS ĐANG CHẠY:${NC}"
+    echo -e "${YELLOW}ID\t\tNAME\t\tIMAGE${NC}"
+    echo "$running_containers"
+
+    echo -e "\n${YELLOW}Nhập Container ID hoặc Name để dừng (hoặc 'all' để dừng tất cả, 'q' để thoát):${NC}"
+    read -p "Lựa chọn: " container_choice
+
+    case $container_choice in
+        "q"|"Q")
+            echo -e "${BLUE}Hủy thao tác${NC}"
+            return
+            ;;
+        "all"|"ALL")
+            echo -e "${YELLOW}Đang dừng tất cả containers...${NC}"
+            docker stop $(docker ps -q) 2>/dev/null
+            if [[ $? -eq 0 ]]; then
+                echo -e "${GREEN}✅ Đã dừng tất cả containers${NC}"
+            else
+                echo -e "${RED}❌ Có lỗi khi dừng containers${NC}"
+            fi
+            ;;
+        *)
+            if [[ -n "$container_choice" ]]; then
+                echo -e "${YELLOW}Đang dừng container: $container_choice${NC}"
+                docker stop "$container_choice" 2>/dev/null
+                if [[ $? -eq 0 ]]; then
+                    echo -e "${GREEN}✅ Đã dừng container: $container_choice${NC}"
+                else
+                    echo -e "${RED}❌ Không thể dừng container: $container_choice${NC}"
+                    echo -e "${YELLOW}Kiểm tra lại Container ID hoặc Name${NC}"
+                fi
+            else
+                echo -e "${RED}❌ Vui lòng nhập Container ID hoặc Name${NC}"
+            fi
+            ;;
+    esac
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+# Nginx management functions
+function restart_nginx() {
+    echo -e "\n${BLUE}🔄 KHỞI ĐỘNG LẠI NGINX${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # Check if Nginx is installed
+    if ! is_installed nginx; then
+        echo -e "${RED}❌ Nginx chưa được cài đặt${NC}"
+        return
+    fi
+
+    # Test configuration first
+    echo -e "${YELLOW}Đang kiểm tra cấu hình Nginx...${NC}"
+    if nginx -t; then
+        echo -e "${GREEN}✅ Cấu hình Nginx hợp lệ${NC}"
+
+        # Show current status
+        echo -e "\n${YELLOW}Trạng thái hiện tại:${NC}"
+        systemctl status nginx --no-pager -l
+
+        # Restart Nginx
+        echo -e "\n${YELLOW}Đang khởi động lại Nginx...${NC}"
+        systemctl restart nginx
+
+        if systemctl is-active --quiet nginx; then
+            echo -e "${GREEN}✅ Nginx đã được khởi động lại thành công${NC}"
+
+            # Show new status
+            echo -e "\n${YELLOW}Trạng thái sau khi restart:${NC}"
+            systemctl status nginx --no-pager -l | head -10
+        else
+            echo -e "${RED}❌ Lỗi khi khởi động lại Nginx${NC}"
+            echo -e "${YELLOW}Chi tiết lỗi:${NC}"
+            systemctl status nginx --no-pager -l | head -15
+        fi
+    else
+        echo -e "${RED}❌ Cấu hình Nginx không hợp lệ. Không thể restart.${NC}"
+        echo -e "${YELLOW}Vui lòng kiểm tra và sửa lỗi cấu hình trước khi restart.${NC}"
+    fi
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+function view_nginx_config() {
+    echo -e "\n${BLUE}📋 CẤU HÌNH NGINX${NC}"
+    echo -e "${BLUE}===========================================${NC}"
+
+    # Check if Nginx is installed
+    if ! is_installed nginx; then
+        echo -e "${RED}❌ Nginx chưa được cài đặt${NC}"
+        return
+    fi
+
+    # Nginx service status
+    echo -e "${GREEN}🔧 NGINX STATUS:${NC}"
+    if systemctl is-active --quiet nginx; then
+        echo -e "   Status: ${GREEN}Running${NC}"
+    else
+        echo -e "   Status: ${RED}Stopped${NC}"
+    fi
+
+    local nginx_version=$(nginx -v 2>&1 | cut -d'/' -f2)
+    echo -e "   Version: $nginx_version"
+
+    # Main configuration
+    echo -e "\n${GREEN}📄 MAIN CONFIG:${NC}"
+    echo -e "   File: /etc/nginx/nginx.conf"
+    if [[ -f /etc/nginx/nginx.conf ]]; then
+        echo -e "   Size: $(du -h /etc/nginx/nginx.conf | cut -f1)"
+        echo -e "   Modified: $(stat -c %y /etc/nginx/nginx.conf | cut -d'.' -f1)"
+    fi
+
+    # Available sites
+    echo -e "\n${GREEN}🌐 AVAILABLE SITES:${NC}"
+    if [[ -d /etc/nginx/sites-available ]]; then
+        local sites_count=$(ls -1 /etc/nginx/sites-available/ 2>/dev/null | wc -l)
+        echo -e "   Total sites: $sites_count"
+
+        if [[ $sites_count -gt 0 ]]; then
+            echo -e "   Sites:"
+            for site in /etc/nginx/sites-available/*; do
+                if [[ -f "$site" ]]; then
+                    local site_name=$(basename "$site")
+                    local enabled_status=""
+                    if [[ -L "/etc/nginx/sites-enabled/$site_name" ]]; then
+                        enabled_status="${GREEN}(enabled)${NC}"
+                    else
+                        enabled_status="${YELLOW}(disabled)${NC}"
+                    fi
+                    echo -e "     - $site_name $enabled_status"
+                fi
+            done
+        fi
+    fi
+
+    # Enabled sites
+    echo -e "\n${GREEN}✅ ENABLED SITES:${NC}"
+    if [[ -d /etc/nginx/sites-enabled ]]; then
+        local enabled_count=$(ls -1 /etc/nginx/sites-enabled/ 2>/dev/null | wc -l)
+        echo -e "   Active sites: $enabled_count"
+    fi
+
+    # Show domain configurations
+    detect_existing_config
+    if [[ -n "$EXISTING_DOMAIN" ]]; then
+        echo -e "\n${GREEN}🔍 DOMAIN CONFIG: $EXISTING_DOMAIN${NC}"
+        local config_file="/etc/nginx/sites-available/$EXISTING_DOMAIN"
+
+        if [[ -f "$config_file" ]]; then
+            echo -e "   Config file: $config_file"
+            echo -e "   Size: $(du -h "$config_file" | cut -f1)"
+            echo -e "   Modified: $(stat -c %y "$config_file" | cut -d'.' -f1)"
+
+            # Extract key information from config
+            echo -e "\n   ${YELLOW}Configuration details:${NC}"
+
+            # Server name
+            local server_names=$(grep "server_name" "$config_file" | sed 's/.*server_name //;s/;//' | xargs)
+            echo -e "     Server names: $server_names"
+
+            # Listen ports
+            local listen_ports=$(grep "listen" "$config_file" | sed 's/.*listen //;s/;//' | xargs)
+            echo -e "     Listen ports: $listen_ports"
+
+            # Check if it's reverse proxy
+            if grep -q "proxy_pass" "$config_file"; then
+                local proxy_target=$(grep "proxy_pass" "$config_file" | sed 's/.*proxy_pass //;s/;//' | xargs)
+                echo -e "     Proxy target: ${GREEN}$proxy_target${NC}"
+                echo -e "     Type: ${GREEN}Reverse Proxy (API Backend)${NC}"
+            else
+                echo -e "     Type: ${YELLOW}Static Files${NC}"
+            fi
+
+            # SSL status
+            if grep -q "listen.*443.*ssl" "$config_file"; then
+                echo -e "     SSL: ${GREEN}Enabled${NC}"
+            else
+                echo -e "     SSL: ${YELLOW}HTTP only${NC}"
+            fi
+
+            # Show recent config (last 20 lines)
+            echo -e "\n   ${YELLOW}Recent config (last 20 lines):${NC}"
+            tail -20 "$config_file" | sed 's/^/     /'
+        else
+            echo -e "   ${RED}Config file not found${NC}"
+        fi
+    fi
+
+    # Configuration test
+    echo -e "\n${GREEN}🧪 CONFIG TEST:${NC}"
+    if nginx -t 2>/dev/null; then
+        echo -e "   Status: ${GREEN}Valid${NC}"
+    else
+        echo -e "   Status: ${RED}Invalid${NC}"
+        echo -e "   ${YELLOW}Errors:${NC}"
+        nginx -t 2>&1 | sed 's/^/     /'
+    fi
+
+    echo -e "${BLUE}===========================================${NC}"
+}
+
+# Helper functions for individual menu items
+function get_user_input_for_user_creation() {
+    detect_existing_config
+
+    if [[ -n "$EXISTING_USER" ]]; then
+        read -p "User hiện tại: $EXISTING_USER. Tạo user mới? (y/n): " CREATE_USER
+        if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập tên user mới: " USERNAME
+                if [[ -n "$USERNAME" ]] && validate_username "$USERNAME"; then
+                    break
+                else
+                    echo -e "${RED}Username không hợp lệ (chỉ chữ thường, số, dấu gạch dưới, gạch ngang).${NC}"
+                fi
+            done
+        else
+            CREATE_USER="n"
+            USERNAME="$EXISTING_USER"
+        fi
+    else
+        read -p "Tạo user non-root? (y/n): " CREATE_USER
+        if [[ "$CREATE_USER" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập tên user: " USERNAME
+                if [[ -n "$USERNAME" ]] && validate_username "$USERNAME"; then
+                    break
+                else
+                    echo -e "${RED}Username không hợp lệ (chỉ chữ thường, số, dấu gạch dưới, gạch ngang).${NC}"
+                fi
+            done
+        fi
+    fi
+}
+
+function get_user_input_for_domain() {
+    detect_existing_config
+
+    if [[ -n "$EXISTING_DOMAIN" ]]; then
+        read -p "Domain hiện tại: $EXISTING_DOMAIN. Thay đổi? (y/n): " change_domain
+        if [[ "$change_domain" =~ ^[Yy]$ ]]; then
+            while true; do
+                read -p "Nhập domain name mới: " DOMAIN
+                if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
+                    break
+                else
+                    echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
+                fi
+            done
+        else
+            DOMAIN="$EXISTING_DOMAIN"
+        fi
+    else
+        while true; do
+            read -p "Nhập domain name (vd: example.com): " DOMAIN
+            if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
+                break
+            else
+                echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
+            fi
+        done
+    fi
+
+    # Reverse proxy option
+    read -p "Cấu hình reverse proxy cho ứng dụng backend? (y/n): " SETUP_PROXY
+    if [[ "$SETUP_PROXY" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "Nhập port của ứng dụng backend (vd: 3000): " PROXY_PORT
+            if [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] && [[ "$PROXY_PORT" -ge 1 ]] && [[ "$PROXY_PORT" -le 65535 ]]; then
+                break
+            else
+                echo -e "${RED}Port không hợp lệ. Vui lòng nhập số từ 1-65535.${NC}"
+            fi
+        done
+    fi
+}
+
+function get_user_input_for_ssl() {
+    detect_existing_config
+
+    if [[ -z "$DOMAIN" ]]; then
+        if [[ -n "$EXISTING_DOMAIN" ]]; then
+            DOMAIN="$EXISTING_DOMAIN"
+        else
+            while true; do
+                read -p "Nhập domain name cho SSL: " DOMAIN
+                if [[ -n "$DOMAIN" ]] && validate_domain "$DOMAIN"; then
+                    break
+                else
+                    echo -e "${RED}Domain không hợp lệ. Vui lòng nhập lại.${NC}"
+                fi
+            done
+        fi
+    fi
+
+    if [[ -z "$EMAIL" ]]; then
+        if [[ -n "$EXISTING_EMAIL" ]]; then
+            read -p "Email hiện tại: $EXISTING_EMAIL. Thay đổi? (y/n): " change_email
+            if [[ "$change_email" =~ ^[Yy]$ ]]; then
+                while true; do
+                    read -p "Nhập email mới cho SSL certificate: " EMAIL
+                    if [[ -n "$EMAIL" ]] && validate_email "$EMAIL"; then
+                        break
+                    else
+                        echo -e "${RED}Email không hợp lệ. Vui lòng nhập lại.${NC}"
+                    fi
+                done
+            else
+                EMAIL="$EXISTING_EMAIL"
+            fi
+        else
+            while true; do
+                read -p "Nhập email cho SSL certificate: " EMAIL
+                if [[ -n "$EMAIL" ]] && validate_email "$EMAIL"; then
+                    break
+                else
+                    echo -e "${RED}Email không hợp lệ. Vui lòng nhập lại.${NC}"
+                fi
+            done
+        fi
+    fi
+}
+
+# Main execution
+function main() {
+    show_banner
+    check_prerequisites
+
+    # Check if running with --auto or --full argument for backward compatibility
+    if [[ "$1" == "--auto" ]] || [[ "$1" == "--full" ]]; then
+        echo -e "\n${GREEN}🚀 Chạy auto setup for deploy...${NC}"
+        auto_setup_for_deploy
+        return
+    fi
+
+    # Show current configuration on startup
+    show_current_config
+
+    # Menu loop
+    while true; do
+        show_menu
+        read -p "Nhập lựa chọn của bạn: " choice
+        echo ""
+
+        handle_menu_choice "$choice"
+
+        # Pause before showing menu again (except for quit)
+        if [[ "$choice" != "q" ]] && [[ "$choice" != "Q" ]]; then
+            echo ""
+            read -p "Nhấn Enter để tiếp tục..."
+        fi
+    done
 }
 
 # Error handling
