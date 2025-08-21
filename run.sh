@@ -274,22 +274,42 @@ function create_user() {
 # Configure firewall
 function setup_firewall() {
     progress "Cấu hình firewall (UFW)"
-    
-    # Reset UFW to defaults
-    ufw --force reset
-    
-    # Default policies
-    ufw default deny incoming
-    ufw default allow outgoing
-    
-    # Allow specific ports
-    ufw allow "$SSH_PORT"/tcp comment 'SSH'
-    ufw allow 80/tcp comment 'HTTP'
-    ufw allow 443/tcp comment 'HTTPS'
-    
-    # Enable UFW
-    ufw --force enable
-    
+
+    # Check if UFW is already configured
+    if ufw status | grep -q "Status: active"; then
+        warning "UFW đã được kích hoạt"
+        # Check if our ports are already configured
+        if ufw status | grep -q "$SSH_PORT/tcp" && ufw status | grep -q "80/tcp" && ufw status | grep -q "443/tcp"; then
+            success "Firewall đã được cấu hình đầy đủ"
+            return
+        else
+            info "Thêm các rule còn thiếu"
+        fi
+    else
+        # Reset UFW to defaults
+        ufw --force reset
+
+        # Default policies
+        ufw default deny incoming
+        ufw default allow outgoing
+    fi
+
+    # Allow specific ports (only if not already allowed)
+    if ! ufw status | grep -q "$SSH_PORT/tcp"; then
+        ufw allow "$SSH_PORT"/tcp comment 'SSH'
+    fi
+    if ! ufw status | grep -q "80/tcp"; then
+        ufw allow 80/tcp comment 'HTTP'
+    fi
+    if ! ufw status | grep -q "443/tcp"; then
+        ufw allow 443/tcp comment 'HTTPS'
+    fi
+
+    # Enable UFW if not already enabled
+    if ! ufw status | grep -q "Status: active"; then
+        ufw --force enable
+    fi
+
     success "Firewall đã được cấu hình"
 }
 
@@ -337,18 +357,22 @@ function install_nginx() {
     
     # Backup original config
     backup_config "/etc/nginx/nginx.conf"
-    
-    # Optimize Nginx configuration
+
+    # Remove old optimization config if exists (to avoid conflicts)
+    if [[ -f /etc/nginx/conf.d/optimization.conf ]]; then
+        backup_config "/etc/nginx/conf.d/optimization.conf"
+        rm -f /etc/nginx/conf.d/optimization.conf
+        info "Đã xóa file optimization.conf cũ"
+    fi
+
+    # Create new Nginx optimization configuration
     cat > /etc/nginx/conf.d/optimization.conf <<EOF
 # Rate limiting
 limit_req_zone \$binary_remote_addr zone=login:10m rate=5r/m;
 limit_req_zone \$binary_remote_addr zone=api:10m rate=10r/s;
 
-# Gzip compression
-gzip on;
-gzip_vary on;
-gzip_min_length 1024;
-gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
+# Note: Gzip compression is already enabled in main nginx.conf
+# Additional gzip settings can be configured there if needed
 
 # Security headers
 add_header X-Frame-Options "SAMEORIGIN" always;
@@ -359,6 +383,11 @@ add_header Referrer-Policy "no-referrer-when-downgrade" always;
 # Hide Nginx version
 server_tokens off;
 EOF
+
+    # Test nginx configuration
+    if ! nginx -t; then
+        error "Cấu hình Nginx không hợp lệ sau khi tạo optimization.conf"
+    fi
     
     success "Nginx đã được cài đặt và cấu hình"
 }
@@ -366,7 +395,14 @@ EOF
 # Configure domain
 function configure_domain() {
     progress "Cấu hình Nginx cho domain: $DOMAIN"
-    
+
+    # Check if domain is already configured
+    if [[ -f "/etc/nginx/sites-available/$DOMAIN" ]] && [[ -L "/etc/nginx/sites-enabled/$DOMAIN" ]]; then
+        warning "Domain $DOMAIN đã được cấu hình"
+        success "Domain $DOMAIN đã được cấu hình"
+        return
+    fi
+
     # Create web directory
     mkdir -p "/var/www/$DOMAIN/html"
     chown -R www-data:www-data "/var/www/$DOMAIN"
@@ -459,7 +495,14 @@ EOF
 # Install SSL certificate
 function install_ssl() {
     progress "Cài đặt SSL certificate với Let's Encrypt"
-    
+
+    # Check if SSL certificate already exists for domain
+    if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+        warning "SSL certificate cho $DOMAIN đã tồn tại"
+        success "SSL certificate đã được cài đặt"
+        return
+    fi
+
     if command -v certbot &> /dev/null; then
         info "Certbot đã được cài đặt"
     else
@@ -489,7 +532,14 @@ function install_ssl() {
 # Setup SSL auto-renewal
 function setup_ssl_renewal() {
     progress "Thiết lập auto-renewal cho SSL"
-    
+
+    # Check if auto-renewal is already configured
+    if [[ -f /usr/local/bin/certbot-renewal.sh ]] && crontab -l 2>/dev/null | grep -q "certbot-renewal"; then
+        warning "Auto-renewal SSL đã được thiết lập"
+        success "Auto-renewal SSL đã được thiết lập"
+        return
+    fi
+
     # Create renewal script
     cat > /usr/local/bin/certbot-renewal.sh <<'EOF'
 #!/bin/bash
@@ -509,9 +559,16 @@ EOF
 # Configure SSH security
 function secure_ssh() {
     progress "Cấu hình bảo mật SSH"
-    
+
+    # Check if SSH is already hardened
+    if [[ -f /etc/ssh/sshd_config.d/99-custom.conf ]]; then
+        warning "SSH đã được cấu hình bảo mật"
+        success "SSH đã được cấu hình bảo mật"
+        return
+    fi
+
     backup_config "/etc/ssh/sshd_config"
-    
+
     # SSH hardening
     cat > /etc/ssh/sshd_config.d/99-custom.conf <<EOF
 # Custom SSH security configuration
@@ -539,7 +596,19 @@ EOF
 # Configure Fail2Ban
 function configure_fail2ban() {
     progress "Cấu hình Fail2Ban"
-    
+
+    # Check if Fail2Ban is already configured
+    if [[ -f /etc/fail2ban/jail.d/custom.conf ]] && systemctl is-active --quiet fail2ban; then
+        warning "Fail2Ban đã được cấu hình và đang chạy"
+        success "Fail2Ban đã được cấu hình"
+        return
+    fi
+
+    # Install fail2ban if not installed
+    if ! is_installed fail2ban; then
+        apt install -y fail2ban || error "Không thể cài đặt Fail2Ban"
+    fi
+
     # Create custom jail configuration
     cat > /etc/fail2ban/jail.d/custom.conf <<EOF
 [DEFAULT]
@@ -577,9 +646,17 @@ EOF
 # Setup log rotation
 function setup_logrotation() {
     progress "Cấu hình log rotation"
-    
-    # Nginx log rotation
-    cat > /etc/logrotate.d/nginx <<EOF
+
+    # Check if custom log rotation is already configured
+    if [[ -f /etc/logrotate.d/vps-setup ]]; then
+        warning "Log rotation đã được cấu hình"
+        success "Log rotation đã được cấu hình"
+        return
+    fi
+
+    # Nginx log rotation (only if nginx is installed)
+    if is_installed nginx; then
+        cat > /etc/logrotate.d/nginx <<EOF
 /var/log/nginx/*.log {
     daily
     missingok
@@ -654,9 +731,12 @@ EOF
     
     chmod +x /usr/local/bin/system-health-check.sh
     
-    # Add to crontab for regular checks
+    # Add to crontab for regular checks (only if not already added)
     if ! crontab -l 2>/dev/null | grep -q "system-health-check"; then
         (crontab -l 2>/dev/null; echo "*/15 * * * * /usr/local/bin/system-health-check.sh") | crontab -
+        info "Đã thêm system health check vào crontab"
+    else
+        info "System health check đã có trong crontab"
     fi
     
     success "Monitoring tools đã được cài đặt"
@@ -665,7 +745,14 @@ EOF
 # System optimization
 function optimize_system() {
     progress "Tối ưu hóa hệ thống"
-    
+
+    # Check if system optimization is already applied
+    if grep -q "# VPS Optimization" /etc/sysctl.conf; then
+        warning "Hệ thống đã được tối ưu hóa"
+        success "Hệ thống đã được tối ưu hóa"
+        return
+    fi
+
     # Kernel parameters optimization
     cat >> /etc/sysctl.conf <<EOF
 
